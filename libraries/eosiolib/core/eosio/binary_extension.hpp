@@ -2,6 +2,8 @@
 
 #include "check.hpp"
 
+#include <utility>
+
 namespace eosio {
     /**
     *  @defgroup binary_extension Binary Extension
