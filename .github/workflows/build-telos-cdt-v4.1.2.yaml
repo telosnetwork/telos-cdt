@@ -1,0 +1,64 @@
+name: Build Telos CDT v4.1.2
+on:
+  push:
+    branches: [ci/cdt-v4.1.2]
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu20-amd64:
+    name: Build, test and package Ubuntu 20 amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a676f2cfb49e9d851411b9056ccb7855bf87b4f7
+          submodules: recursive
+          persist-credentials: false
+      - name: Build exact release candidate
+        run: |
+          test "$(git rev-parse HEAD)" = a676f2cfb49e9d851411b9056ccb7855bf87b4f7
+          git diff --exit-code HEAD
+          git submodule status --recursive
+          mkdir -p "$RUNNER_TEMP/cdt-release"
+          docker run --rm --platform linux/amd64 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,dst=/src,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/cdt-release,dst=/release" \
+            ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214 \
+            bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive CMAKE_BUILD_PARALLEL_LEVEL=4
+              apt-get update -qq
+              apt-get install -y --no-install-recommends build-essential ca-certificates \
+                cmake git ninja-build python3 pkg-config libboost-dev libcurl4-gnutls-dev
+              cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release
+              cmake --build /build
+              (cd /build/tests && ctest --parallel 4 --output-on-failure)
+              cd /build/packages
+              bash generate_package.sh deb ubuntu amd64 > /release/packaging.log 2>&1
+              deb=cdt_4.1.2-1_amd64.deb
+              test "$(dpkg-deb -f "$deb" Version)" = 4.1.2-1
+              test "$(dpkg-deb -f "$deb" Architecture)" = amd64
+              apt-get install -y "./$deb"
+              for compiler in cdt-cpp cdt-cc cdt-ld; do
+                "$compiler" --version | grep -F 4.1.2
+              done
+              smoke=$(mktemp -d)
+              cd "$smoke"
+              cp /src/examples/hello/include/hello.hpp /src/examples/hello/src/hello.cpp .
+              cdt-cpp -I. -abigen -contract=hello -o hello.wasm hello.cpp
+              python3 -c "import json; assert open(\"hello.wasm\", \"rb\").read(8).hex() == \"0061736d01000000\"; assert any(a[\"name\"] == \"hi\" for a in json.load(open(\"hello.abi\"))[\"actions\"])"
+              cp "/build/packages/$deb" /release/
+              cd /release
+              sha256sum "$deb" > "$deb.sha256"
+            '
+      - name: Upload tested release package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cdt_ubuntu_package_amd64
+          path: |
+            ${{ runner.temp }}/cdt-release/cdt_4.1.2-1_amd64.deb
+            ${{ runner.temp }}/cdt-release/cdt_4.1.2-1_amd64.deb.sha256
+          if-no-files-found: error
+          compression-level: 0
