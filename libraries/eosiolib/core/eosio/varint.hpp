@@ -4,6 +4,10 @@
  */
 #pragma once
 
+#include <cstdint>
+
+#include "check.hpp"
+
 namespace eosio {
    /**
     * @defgroup varint Variable Length Integer Type
@@ -434,7 +438,8 @@ namespace eosio {
         */
        template<typename DataStream>
        friend DataStream& operator << ( DataStream& ds, const signed_int& v ){
-         uint32_t val = uint32_t((v.value<<1) ^ (v.value>>31));
+         const uint32_t sign_mask = v.value < 0 ? UINT32_MAX : 0;
+         uint32_t val = (uint32_t(v.value) << 1) ^ sign_mask;
          do {
             uint8_t b = uint8_t(val) & 0x7f;
             val >>= 7;
@@ -445,7 +450,7 @@ namespace eosio {
        }
 
        /**
-        *  Deserialize an signed_int object
+        *  Deserialize a signed_int object with the same five-byte limit as the node.
         *
         *  @param ds - The stream to read
         *  @param vi - The destination for deserialized value
@@ -459,8 +464,10 @@ namespace eosio {
             ds.get(b);
             v |= uint32_t(uint8_t(b) & 0x7f) << by;
             by += 7;
-         } while( uint8_t(b) & 0x80 );
-         vi.value = (v>>1) ^ (~(v&1)+1ull);
+         } while( uint8_t(b) & 0x80 && by < 32 );
+         eosio::check( !(uint8_t(b) & 0x80), "signed_int is longer than five bytes" );
+         const int32_t magnitude = static_cast<int32_t>(v >> 1);
+         vi.value = (v & 1) ? -1 - magnitude : magnitude;
          return ds;
        }
 
