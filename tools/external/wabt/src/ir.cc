@@ -522,9 +522,11 @@ void MakeTypeBindingReverseMapping(
   out_reverse_mapping->clear();
   out_reverse_mapping->resize(num_types);
   for (const auto& pair : bindings) {
-    assert(static_cast<size_t>(pair.second.index) <
-           out_reverse_mapping->size());
-    (*out_reverse_mapping)[pair.second.index] = pair.first;
+    // Ignore debug names that refer to a local outside the function.
+    const auto index = static_cast<size_t>(pair.second.index);
+    if (index < out_reverse_mapping->size()) {
+      (*out_reverse_mapping)[index] = pair.first;
+    }
   }
 }
 
