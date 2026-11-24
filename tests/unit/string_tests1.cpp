@@ -726,69 +726,34 @@ EOSIO_TEST_BEGIN(string_test_substr_2)
 EOSIO_TEST_END
 
 //// size_t copy(char* dest, size_t len, size_t pos = 0) const
+static void check_copy(const string& eostr) {
+   char str[7];
+   auto check_range = [&](size_t len, size_t pos, const char* expected) {
+      std::fill_n(str, sizeof(str), '#');
+      const auto count = strlen(expected);
+      CHECK_EQUAL( eostr.copy(str, len, pos), count )
+      CHECK_EQUAL( memcmp(str, expected, count), 0 )
+      CHECK_EQUAL( std::all_of(str + count, str + sizeof(str), [](char c) { return c == '#'; }), true )
+   };
+
+   check_range(0, 0, "");
+   check_range(10, 0, "abcdef");
+   check_range(10, 1, "bcdef");
+   check_range(10, 2, "cdef");
+   check_range(10, 3, "def");
+   check_range(10, 4, "ef");
+   check_range(10, 5, "f");
+   check_range(10, 6, "");
+}
+
 EOSIO_TEST_BEGIN(string_test_copy_1)
    const string eostr{"abcdef"};
-   char str[7]{};
-
-   CHECK_EQUAL( eostr.copy(str, 0), 0 )
-   CHECK_EQUAL( strcmp(str, ""), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10), 6 )
-   CHECK_EQUAL( strcmp(str, "abcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 0), 6 )
-   CHECK_EQUAL( strcmp(str, "abcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 1), 5 )
-   CHECK_EQUAL( strcmp(str, "bcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 2), 4 )
-   CHECK_EQUAL( strcmp(str, "cdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 3), 3 )
-   CHECK_EQUAL( strcmp(str, "def"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 4), 2 )
-   CHECK_EQUAL( strcmp(str, "ef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 5), 1 )
-   CHECK_EQUAL( strcmp(str, "f"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 6), 0 )
-   CHECK_EQUAL( strcmp(str, ""), 0 )
+   check_copy(eostr);
 EOSIO_TEST_END
 
 EOSIO_TEST_BEGIN(string_test_copy_2)
-   string eostr{""};
-   eostr += "abcdef";
-   char str[7]{};
-
-   CHECK_EQUAL( eostr.copy(str, 0), 0 )
-   CHECK_EQUAL( strcmp(str, ""), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10), 6 )
-   CHECK_EQUAL( strcmp(str, "abcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 0), 6 )
-   CHECK_EQUAL( strcmp(str, "abcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 1), 5 )
-   CHECK_EQUAL( strcmp(str, "bcdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 2), 4 )
-   CHECK_EQUAL( strcmp(str, "cdef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 3), 3 )
-   CHECK_EQUAL( strcmp(str, "def"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 4), 2 )
-   CHECK_EQUAL( strcmp(str, "ef"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 5), 1 )
-   CHECK_EQUAL( strcmp(str, "f"), 0 )
-
-   CHECK_EQUAL( eostr.copy(str, 10, 6), 0 )
-   CHECK_EQUAL( strcmp(str, ""), 0 )
+   const string eostr("abcdef", 6);
+   check_copy(eostr);
 EOSIO_TEST_END
 
 EOSIO_TEST_BEGIN(string_test_copy_3)
@@ -858,6 +823,25 @@ EOSIO_TEST_BEGIN(string_test_ins_8)
    CHECK_EQUAL( strcmp(eostr.c_str(), "iiiooo"), 0 )
 EOSIO_TEST_END
 
+EOSIO_TEST_BEGIN(string_test_owned_storage)
+   string first("abc", 3);
+   const string second("xyz", 3);
+   CHECK_EQUAL( strcmp(first.c_str(), "abc"), 0 )
+   CHECK_EQUAL( strcmp(second.c_str(), "xyz"), 0 )
+   first.insert(1, first);
+   CHECK_EQUAL( strcmp(first.c_str(), "aabcbc"), 0 )
+   first.erase(1, 3);
+   CHECK_EQUAL( strcmp(first.c_str(), "abc"), 0 )
+   CHECK_EQUAL( first.capacity(), 6 )
+   first.resize(5);
+   CHECK_EQUAL( first.size(), 5 )
+   CHECK_EQUAL( first.c_str()[4], '\0' )
+   first.resize(3);
+   CHECK_EQUAL( strcmp(first.c_str(), "abc"), 0 )
+   first.clear();
+   CHECK_EQUAL( first.c_str()[0], '\0' )
+EOSIO_TEST_END
+
 int main(int argc, char* argv[]) {
    bool verbose = false;
    if( argc >= 2 && std::strcmp( argv[1], "-v" ) == 0 ) {
@@ -866,6 +850,7 @@ int main(int argc, char* argv[]) {
    silence_output(!verbose);
 
    EOSIO_TEST(string_test_ctr_lit)
+   EOSIO_TEST(string_test_owned_storage)
    EOSIO_TEST(string_test_ctr_def)
    EOSIO_TEST(string_test_ctr_char_ptr)
    EOSIO_TEST(string_test_ctr_char_rep)

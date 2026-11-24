@@ -5,13 +5,15 @@
 
 #pragma once
 
-#include <cstring>   // memcpy, memset, strlen
-#include <algorithm> // std::swap
+#include <cstring>   // memcpy, memmove, memset, strlen
+#include <algorithm> // std::min, std::swap
+#include <cstdint>   // uintptr_t
 #include <memory>    // std::unique_ptr
 #include <variant>   // std::variant
 #include <vector>    // std::vector
 
 #include "datastream.hpp" // eosio::datastream
+#include "print.hpp"      // eosio::internal_use_do_not_use::prints_l
 #include "varint.hpp"     // eosio::unsigned_int
 
 namespace eosio {
@@ -36,33 +38,21 @@ namespace eosio {
       }
 
       constexpr string(const char* str, const size_t n)
-         : _size{n}
-         , _capacity{_size*2}
       {
-         char* begin{new char[_capacity]};
-         memcpy(begin, str, _size);
-         _begin = begin;
+         if (n != 0 && str == nullptr)
+            eosio::check(false, "eosio::string::construct");
+         clone(n, grown_capacity(n), str);
       }
 
       constexpr string(const size_t n, const char c)
-         : _size{n}
-         , _capacity{_size*2}
       {
-         char* begin{new char[_capacity]};
-         memset(begin, c, _size);
-         _begin = begin;
+         fill(n, c);
       }
 
       constexpr string(const string& str, const size_t pos, const size_t n)
-         : _size{n}
-         , _capacity{_size*2}
       {
-         if (n == string::npos || str._size < pos+n) {
-            _size     = str._size;
-            _capacity = _size*2;
-         }
-
-         clone(_size, _capacity, str.data()+pos);
+         const auto count = str.range_length(pos, n, "eosio::string::substr");
+         clone(count, grown_capacity(count), str.data() + pos);
       }
 
       constexpr string(const string& str)
@@ -81,21 +71,21 @@ namespace eosio {
       {
          if (str.is_literal())
             _begin = std::get<const char*>(str._begin);
-         else
+         else {
             _begin = std::move(std::get<uptr>(str._begin));
+            str._begin = "";
+            str._size = str._capacity = 0;
+         }
       }
 
       string& operator=(const string& str) {
          if (&str == this)
             return *this;
 
-         _size     = str._size;
-         _capacity = str._capacity;
-
          if (str.is_literal())
-            _begin = std::get<const char*>(str._begin);
+            assign_borrowed(str.cbegin(), str._size);
          else
-            clone(_size, _capacity, str.data());
+            clone(str._size, str._capacity, str.data());
 
          return *this;
       }
@@ -104,22 +94,22 @@ namespace eosio {
          if (&str == this)
             return *this;
 
-         _size     = str._size;
-         _capacity = str._capacity;
-
          if (str.is_literal())
-            _begin = std::get<const char*>(str._begin);
-         else
+            assign_borrowed(str.cbegin(), str._size);
+         else {
+            _size = str._size;
+            _capacity = str._capacity;
             _begin = std::move(std::get<uptr>(str._begin));
+            str._begin = "";
+            str._size = str._capacity = 0;
+         }
 
          return *this;
       }
 
       string& operator=(const char* str) {
-         _size     = strlen(str);
-         _capacity = _size;
-         _begin    = str;
-
+         eosio::check(str != nullptr, "eosio::string::assign");
+         assign_borrowed(str, strlen(str));
          return *this;
       }
 
@@ -168,32 +158,12 @@ namespace eosio {
       }
 
       const char* c_str() const {
-         static size_t prev_size{0};
-         char* raw_ptr{nullptr};
-         
-         if (is_literal())
-            return std::get<const char*>(_begin);
-         
-         if (_size == prev_size)
-            return std::get<uptr>(_begin).get();
-         else if (_size < prev_size)
-            raw_ptr = std::get<uptr>(_begin).get();
-         else {
-            uptr tmp  = std::make_unique<char[]>(_size+1);
-            raw_ptr   = tmp.get();
-            prev_size = _size;
-            memcpy(raw_ptr, std::get<uptr>(_begin).get(), _size);
-         }
-         
-         raw_ptr[_size+1] = '\0';
-         return raw_ptr;
+         return cbegin();
       }
 
       char* begin() {
-         if (is_literal()) {
-            _capacity *= 2;
-            clone(_size, _capacity, std::get<const char*>(_begin));
-         }
+         if (is_literal())
+            clone(_size, grown_capacity(_capacity), cbegin());
 
          return std::get<uptr>(_begin).get();
       }
@@ -231,14 +201,8 @@ namespace eosio {
       }
 
       void reserve(const size_t n) {
-         if (_capacity < n) {
-            _capacity = n;
-
-            const char* tmp{(is_literal()) ? std::get<const char*>(_begin) : std::get<uptr>(_begin).get()};
-            clone(_size, _capacity, tmp);
-         }
-         else
-            return;
+         if (_capacity < n)
+            clone(_size, n, cbegin());
       }
 
       void shrink_to_fit() {
@@ -246,25 +210,23 @@ namespace eosio {
       }
 
       void clear() {
-         _size = 0;
-
          if (is_literal())
-            clone(_size, _capacity, std::get<const char*>(_begin));
-         std::get<uptr>(_begin).get()[0] = '\0';
+            clone(0, _capacity, cbegin());
+         else {
+            _size = 0;
+            std::get<uptr>(_begin)[0] = '\0';
+         }
       }
 
       void resize(const size_t n) {
-         if (is_literal())
-            clone(n, _capacity, std::get<const char*>(_begin));
-         else {
-            _size = n;
-            if (n <= _capacity)
-               memset(std::get<uptr>(_begin).get()+_size, '\0', _capacity-_size);
-            else {
-               _capacity = _size*2;
-               clone(_size, _capacity, std::get<uptr>(_begin).get());
-            }
-         }
+         if (is_literal() || n > _capacity)
+            clone(std::min(_size, n), n > _capacity ? grown_capacity(n) : _capacity, cbegin());
+
+         auto* buffer = std::get<uptr>(_begin).get();
+         if (n > _size)
+            memset(buffer + _size, '\0', n - _size);
+         buffer[n] = '\0';
+         _size = n;
       }
 
       void swap(string& str) {
@@ -278,7 +240,7 @@ namespace eosio {
       void pop_back() {
          if (_size == 0)
             return;
-         resize(--_size);
+         resize(_size - 1);
       }
 
       string substr(size_t pos = 0, size_t len = npos) const {
@@ -286,63 +248,76 @@ namespace eosio {
       }
 
       size_t copy(char* s, size_t len, size_t pos = 0) const {
-         eosio::check(pos <= _size, "eosio::string::copy");
-         len = (_size < pos+len) ? _size : len;
-
-         const char* tmp{(is_literal()) ? std::get<const char*>(_begin) : std::get<uptr>(_begin).get()};
-         memcpy(s, tmp+pos, len);
-
-         return (_size < pos+len) ? _size-pos : len;
+         const auto count = range_length(pos, len, "eosio::string::copy");
+         if (count != 0) {
+            eosio::check(s != nullptr, "eosio::string::copy");
+            const auto offset = buffer_offset(s);
+            if (!is_literal() && offset <= _capacity)
+               eosio::check(offset <= _size && count <= _size - offset, "eosio::string::copy");
+            memmove(s, cbegin() + pos, count);
+         }
+         return count;
       }
 
       string& insert(const size_t pos, const char* str) {
+         eosio::check(str != nullptr, "eosio::string::insert");
          return insert(pos, str, strlen(str));
       }
 
       string& insert(const size_t pos, const char* str, const size_t len) {
-         eosio::check((str != nullptr) && (0 <= pos && pos <= _size), "eosio::string::insert");
+         eosio::check(str != nullptr && pos <= _size, "eosio::string::insert");
+         if (len == 0)
+            return *this;
+         eosio::check(len <= npos - 1 - _size, "eosio::string::capacity");
 
-         if (_capacity < (_size+len)) {
-            _size      += len;
-            _capacity  = _size*2;
+         const auto offset = buffer_offset(str);
+         const bool aliased = offset <= _capacity;
+         if (aliased)
+            eosio::check(offset <= _size && len <= _size + 1 - offset, "eosio::string::insert");
 
-            uptr begin{std::make_unique<char[]>(_capacity)};
-            const char* tmp{(is_literal()) ? std::get<const char*>(_begin) : std::get<uptr>(_begin).get()};
-
-            memcpy(begin.get(), tmp, pos);
-            memcpy(begin.get()+pos, str, len);
-            memcpy(begin.get()+len+pos, tmp+pos, _size-len-pos);
-
-            _begin = std::move(begin);
+         const auto new_size = _size + len;
+         if (new_size > _capacity || is_literal()) {
+            const auto capacity = new_size > _capacity ? grown_capacity(new_size) : _capacity;
+            auto buffer = allocate(capacity);
+            const auto* old = cbegin();
+            memcpy(buffer.get(), old, pos);
+            memcpy(buffer.get() + pos, str, len);
+            memcpy(buffer.get() + pos + len, old + pos, _size - pos);
+            buffer[new_size] = '\0';
+            _begin = std::move(buffer);
+            _capacity = capacity;
+         } else {
+            // Moving the suffix can overwrite an insertion source in the same buffer.
+            uptr source;
+            if (aliased) {
+               source = allocate(len);
+               memcpy(source.get(), str, len);
+               str = source.get();
+            }
+            auto* buffer = std::get<uptr>(_begin).get();
+            memmove(buffer + pos + len, buffer + pos, _size - pos);
+            memcpy(buffer + pos, str, len);
+            buffer[new_size] = '\0';
          }
-         else {
-            if(is_literal())
-               clone(_size, _capacity, std::get<const char*>(_begin));
-            _size += len;
-            memmove(std::get<uptr>(_begin).get()+pos+len, std::get<uptr>(_begin).get()+pos, _size-pos);
-            memcpy(std::get<uptr>(_begin).get()+pos, str, len);
-         }
+         _size = new_size;
 
          return *this;
       }
 
       string& insert(const size_t pos, const string& str) {
-         insert(pos, str.c_str());
-         return *this;
+         return insert(pos, str.c_str());
       }
 
       string& erase(size_t pos = 0, size_t len = npos) {
-         eosio::check(0 <= pos && pos <= _size, "eosio::string::erase");
-
-         if (len == string::npos)
-            len = _size-pos;
-
-         _size -= len;
-
-         if (is_literal())
-            clone(_size, _capacity, std::get<const char*>(_begin));
-         memmove(std::get<uptr>(_begin).get()+pos+len, std::get<uptr>(_begin).get(), len);
-         resize(_size);
+         const auto count = range_length(pos, len, "eosio::string::erase");
+         if (count != 0) {
+            if (is_literal())
+               clone(_size, _capacity, cbegin());
+            auto* buffer = std::get<uptr>(_begin).get();
+            memmove(buffer + pos, buffer + pos + count, _size - pos - count);
+            _size -= count;
+            buffer[_size] = '\0';
+         }
 
          return *this;
       }
@@ -360,22 +335,7 @@ namespace eosio {
       }
 
       string& operator+=(const char c) {
-         if (_capacity == 0) {
-            _size     = 1;
-            _capacity = 2;
-            clone(1, _capacity, &c);
-         }
-         else if (_size == _capacity) {
-            _capacity = ++_size*2;
-
-            const char* tmp{(is_literal()) ? std::get<const char*>(_begin) : std::get<uptr>(_begin).get()};
-            clone(_size, _capacity, tmp);
-            std::get<uptr>(_begin).get()[_size-1] = c;
-         }
-         else
-            std::get<uptr>(_begin).get()[_size++] = c;
-
-         return *this;
+         return insert(_size, &c, 1);
       }
 
       string& operator+=(const char* rhs) {
@@ -410,13 +370,54 @@ namespace eosio {
       size_t  _capacity = 0;
       sso_str _begin    = nullptr;
 
+      constexpr size_t range_length(size_t pos, size_t count, const char* message) const {
+         if (pos > _size)
+            eosio::check(false, message);
+         return std::min(count, _size - pos);
+      }
+
+      static constexpr size_t grown_capacity(size_t size) {
+         return size <= (npos - 1) / 2 ? size * 2 : size;
+      }
+
+      static uptr allocate(size_t capacity) {
+         eosio::check(capacity < npos, "eosio::string::capacity");
+         return uptr{new char[capacity + 1]};
+      }
+
+      uintptr_t buffer_offset(const char* str) const {
+         // A source can point outside the string, where pointer subtraction is invalid.
+         return reinterpret_cast<uintptr_t>(str) - reinterpret_cast<uintptr_t>(cbegin());
+      }
+
+      void assign_borrowed(const char* str, size_t size) {
+         if (!is_literal() && buffer_offset(str) <= _capacity) {
+            clone(size, size, str);
+         } else {
+            _size = _capacity = size;
+            _begin = str;
+         }
+      }
+
       void clone(size_t size, size_t capacity, const char* str) {
+         eosio::check(size <= capacity, "eosio::string::capacity");
+         auto begin = allocate(capacity);
+         if (size != 0)
+            memcpy(begin.get(), str, size);
+         begin[size] = '\0';
+         _begin = std::move(begin);
          _size     = size;
          _capacity = capacity;
+      }
 
-         uptr begin{std::make_unique<char[]>(capacity)};
-         memcpy(begin.get(), str, size);
+      void fill(size_t size, char value) {
+         const auto capacity = grown_capacity(size);
+         auto begin = allocate(capacity);
+         memset(begin.get(), value, size);
+         begin[size] = '\0';
          _begin = std::move(begin);
+         _size = size;
+         _capacity = capacity;
       }
 
       constexpr bool is_literal() const {
